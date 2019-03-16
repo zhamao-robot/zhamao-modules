@@ -1,0 +1,47 @@
+<?php
+/**
+ * Created by PhpStorm.
+ * User: jerry
+ * Date: 2018/6/24
+ * Time: 11:31 AM
+ */
+
+class MinecraftLookup extends ModBase
+{
+    public function __construct(CrazyBot $main, $data) { parent::__construct($main, $data); }
+
+    public function execute($it) {
+        switch ($it[0]) {
+            case "mc-status":
+                if (count($it) < 3) {
+                    $msg = "「Minecraft服务器查询」";
+                    $msg .= "\n目标服务器必须先开启query才能查询哦";
+                    $msg .= "\n用法：mc-status 服务器地址 端口";
+                    $msg .= "\n例如：mc-status minecraft.net 25565";
+                    $this->reply($msg);
+                    return true;
+                }
+                $address = $it[1];
+                $port = $it[2];
+                if (!is_numeric($port) || strpos($port, ".") !== false) {
+                    $this->reply("对不起，端口必须是数字！");
+                    return true;
+                }
+                try {
+                    $query = new MinecraftQuery();
+                    $query->Connect($address, $port);
+                    $msg = "=====Minecraft status=====";
+                    $msg .= "\n[Version] " . $query->GetInfo()["Version"];
+                    $msg .= "\n[Players] " . $query->GetInfo()["Players"];
+                    if ($query->GetInfo()["Players"] != 0) {
+                        $msg .= "\n[List]    " . implode(", ", is_array($query->GetPlayers()) ? $query->GetPlayers() : []);
+                    }
+                } catch (Exception $e) {
+                    $msg = "查询错误！错误信息：" . $e->getMessage();
+                }
+                $this->reply($msg);
+                return true;
+        }
+        return false;
+    }
+}
