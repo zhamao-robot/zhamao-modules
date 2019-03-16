@@ -6,37 +6,80 @@
  * Time: 11:36 PM
  */
 
+use DataProvider as DP;
+
 class GroupTools extends ModBase
 {
-    public function __construct(CrazyBot $main, $data) { parent::__construct($main, $data); }
+    public function __construct(CrazyBot $main, $data) {
+        parent::__construct($main, $data);
+    }
+
+    public static function initValues() {
+        ZMBuf::set("group_attr", DP::getJsonData("GroupTools_attribute.json"));
+    }
+
+    public static function saveValues() {
+        DP::setJsonData("GroupTools_attribute.json", ZMBuf::get("group_attr"));
+    }
+
+    public static function onNotice($req, WSConnection $connection) {
+        if ($req["notice_type"] == "group_increase") {
+            if (($msg = ZMBuf::get("group_attr")[$req["group_id"]]["join_msg"] ?? "") != "") {
+                $info = CQAPI::get_stranger_info($connection, $req["user_id"], true);
+                if ($info === null) return;
+                $nickname = $info["data"]["nickname"];
+                $msg = str_replace("{name}", $nickname, $msg);
+                $msg = str_replace("{qq}", $req["user_id"], $msg);
+                $msg = str_replace("{enter}", "\n", $msg);
+                $msg = str_replace("{at}", CQ::at($req["user_id"]), $msg);
+                CQAPI::send_group_msg($connection, $req["group_id"], $msg);
+            }
+        }
+    }
 
     public function execute($it) {
         if ($this->data["message_type"] != "group") return true;
-        $ls = [
-            "group_id" => $this->data["group_id"],
-            "user_id" => $this->getUserId(),
-            "no_cache" => true
-        ];
         switch ($it[0]) {
+            case "开启进群提醒":
+            case "开启加群提醒":
+            case "开启入群提醒":
+                $argcs = array_shift($it);
+                $other = implode(" ", $it);
+                if ($this->data['sender']['role'] == 'member' && !in_array($this->getUserId(), ZMBuf::get('su'))) return false;
+                if (trim($other) == "") {
+                    $this->reply("请输入你要设置的本群的入群提示语\n==========\n支持变量：\n{name} : 加入的用户昵称\n{qq} : 加入的用户QQ号\n{at} : 艾特新加入的用户\n{enter} : 换行");
+                    if (!isset(ZMBuf::get("group_attr")[$this->data["group_id"]]["join_msg"])) $this->reply("例子：\n欢迎新人 {at} 加入本群！请仔细阅读群公告！");
+                    $recv = $this->waitUserMessage($this->data);
+                    if ($recv === null) return $this->reply("设置入群提示语超时，请重新回复：" . $argcs);
+                    if (in_array(mb_substr($recv, 0, 2), ["取消", "不用", "不了", "算了", "停止", "终止", "撤销"])) return $this->reply("停止设置");
+                } else {
+                    $recv = trim($other);
+                }
+                $r = ZMBuf::get("group_attr");
+                $r[$this->data["group_id"]]["join_msg"] = $recv;
+                ZMBuf::set("group_attr", $r);
+                return $this->reply("成功设置入群提示！关闭入群提醒请回复：\n关闭入群提醒");
+            case "关闭进群提醒":
+            case "关闭入群提醒":
+            case "关闭加群提醒":
+                if ($this->data['sender']['role'] == 'member' && !in_array($this->getUserId(), ZMBuf::get('su'))) return false;
+                $r = ZMBuf::get("group_attr");
+                $r[$this->data["group_id"]]["join_msg"] = "";
+                ZMBuf::set("group_attr", $r);
+                return $this->reply("成功关闭入群提示！再次开启入群提醒请回复：\n开启入群提醒");
             case "说话":
             case "闭嘴":
                 $set_status = $it[0] == "说话" ? true : false;
-                CQAPI::get_group_member_info($this->getConnection(), $ls, function ($response) use ($set_status) {
-                    if ($response["data"]["role"] == "member" && !in_array($response["data"]["user_id"], ZMBuf::get("su"))) return;
-                    GroupManager::setGroupStatus($response["data"]["group_id"], $response["self_id"], $set_status, ($set_status ? "已开启本群服务！" : "已停止本群服务！再次开启服务请回复：说话"));
-                });
+                if ($this->data['sender']['role'] == 'member' && !in_array($this->getUserId(), ZMBuf::get('su'))) return false;
+                GroupManager::setGroupStatus($this->data['group_id'], $this->getRobotId(), $set_status, ($set_status ? "已开启本群服务！" : "已停止本群服务！再次开启服务请回复：说话"));
                 return true;
             case "关闭全体消息记录":
             case "开启全体消息记录":
                 $set_status = $it[0] == "开启全体消息记录" ? true : false;
                 $conn = $this->getConnection();
-                CQAPI::get_group_member_info($this->getConnection(), $ls, function ($response) use ($set_status, $conn) {
-                    if ($response["data"]["role"] == "member" && !in_array($response["data"]["user_id"], ZMBuf::get("su"))) return;
-                    $attribute_list = DataProvider::getJsonData("data/group_list_attribute.json");
-                    $attribute_list[$response["data"]["group_id"]]["at_msg_record"] = $set_status;
-                    CQAPI::send_group_msg($conn, $response["data"]["group_id"],"成功" . ($set_status ? "开启" : "关闭") . "群at全体消息记录功能！");
-                    DataProvider::setJsonData("data/group_list_attribute.json", $attribute_list);
-                });
+                if ($this->data["sender"]["role"] == "member" && !in_array($this->getUserId(), ZMBuf::get("su"))) return false;
+                CQAPI::send_group_msg($conn, $this->data['group_id'], "成功" . ($set_status ? "开启" : "关闭") . "群at全体消息记录功能！");
+                GroupManager::getGroup($this->data['group_id'])->setFunction('at_msg_record', $set_status);
                 return true;
             case "查看全体消息":
             case "查看全体信息":
@@ -44,13 +87,8 @@ class GroupTools extends ModBase
             case "全体消息":
                 if (!isset($it[1])) $page = 1;
                 else $page = intval($it[1]);
-
-                $db = DataProvider::connect();//阻塞IO
-                $r = $db->query("SELECT * FROM group_at_message WHERE group_id = '" . $db->real_escape_string($this->data["group_id"]) . "'");
-                $ls = [];
-                while (($v = $r->fetch_assoc())) {
-                    $ls[] = $v;
-                }
+                //CQAPI::debug("co_uid: ".Co::getuid());
+                $ls = DataProvider::query("SELECT * FROM group_at_message WHERE group_id = ?", [$this->data["group_id"]]);
                 for ($i = 0; $i < count($ls) - 1; $i++) {//外层循环控制排序趟数
                     for ($j = 0; $j < count($ls) - 1 - $i; $j++) {
                         if ($ls[$j]["send_time"] < $ls[$j + 1]["send_time"]) {
@@ -82,20 +120,16 @@ class GroupTools extends ModBase
                 }
                 return true;
             default:
-                $group_info = ZMBuf::get("group_list")[$this->data["group_id"]] ?? null;
-                if ($group_info === null) {
-                    Console::trace("群组列表中找不到群：" . $this->data["group_id"]);
-                    return false;
-                }
-                if (($group_info["at_msg_record"] ?? true) === true) {
-                    if (mb_strpos($this->data["message"], "[CQ:at,qq=all]") !== false) {
+                if (mb_strpos($this->data["message"], "[CQ:at,qq=all]") !== false) {
+                    if (!GroupManager::isGroupExists($this->data['group_id'])) return false;
+                    $group_info = GroupManager::getGroup($this->data['group_id'])->getFunction();
+                    if (($group_info['at_msg_record'] ?? true) === true) {
                         $user_id = $this->getUserId();
                         $group_id = $this->data["group_id"];
                         $msg = str_replace("[CQ:at,qq=all]", "", $this->data["message"]);
                         $msg = trim($msg);
                         if ($msg != "") {
-                            $db = DataProvider::connect();
-                            $db->query("INSERT INTO group_at_message (group_id, send_time, user_id, message) VALUES ('" . $db->real_escape_string($group_id) . "', '" . time() . "', '" . $db->real_escape_string($user_id) . "', '" . $db->real_escape_string(base64_encode($msg)) . "')");
+                            DataProvider::query("INSERT INTO group_at_message (group_id, send_time, user_id, message) VALUES (?,?,?,?)", [$group_id, time(), $user_id, base64_encode($msg)]);
                         }
                     }
                 }
