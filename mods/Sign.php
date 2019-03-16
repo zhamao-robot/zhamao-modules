@@ -13,13 +13,8 @@ class Sign extends ModBase
     public function __construct(CrazyBot $main, $data) {
         parent::__construct($main, $data);
         $cq = ZMUtil::getCQ($data["message"]);
-        if ($cq !== null) {
-            if ($cq["type"] == "sign") {
-                $time = $this->getUser()->getSignTime();//[年月日，小时分钟秒，时间戳]
-                if ($time[0] != date("Ymd")) {
-                    $this->doSign($time);
-                }
-            }
+        if (($cq !== null && $cq["type"] == "sign") || mb_strpos($data['message'],'群签到') !== false) {
+            $this->doSign();
         }
     }
 
@@ -27,35 +22,29 @@ class Sign extends ModBase
         $sign = DP::getJsonData("Sign_config.json");
         ZMBuf::set("sign_mode", $sign["mode"] ?? true);
         ZMBuf::set("sign_attribute", $sign["attribute"] ?? []);
+        ZMBuf::set("sign_first", $sign["first"] ?? []);
     }
 
     public static function saveValues() {
         $sign = DP::getJsonData("Sign_config.json");
         $sign["mode"] = ZMBuf::get("sign_mode");
         $sign["attribute"] = ZMBuf::get("sign_attribute");
+        $sign["first"] = ZMBuf::get("sign_first");
         DP::setJsonData("Sign_config.json", $sign);
     }
 
     public function execute($it) {
         switch ($it[0]) {
-            case "强行签到":
-                if (!$this->main->isAdmin()) return false;
-                $date = date("Y", time() - 86400);
-                $date2 = date("m", time() - 86400);
-                $date3 = date("d", time() - 86400);
-                $this->doSign([$date, $date2, $date3]);
-                return true;
             case "签到":
                 if ($this->getMessageType() == "wechat") {
                     $this->reply("微信暂不支持此功能哦！");
                     return true;
                 }
-                $time = $this->getUser()->getSignTime();//[年月日，小时分钟秒，时间戳]
-                if ($time[0] != date("Ymd")) {
-                    $this->doSign($time);
+                if($this->doSign() === false){
+                    $this->reply("你已经签过到啦！");
                 }
                 return true;
-            case "签到排行":
+            /*case "签到排行":
                 $users = ZMUtil::getAllUsers(true);
                 $points = [];
                 foreach ($users as $k => $v) {
@@ -83,7 +72,7 @@ class Sign extends ModBase
                     $i++;
                 }
                 $this->reply($msg);
-                return true;
+                return true;*/
             case "设置签到":
                 if (!$this->main->isAdmin($this->getUserId())) return true;
                 if (isset($it[1])) {
@@ -130,94 +119,69 @@ class Sign extends ModBase
         return false;
     }
 
-    public function isLastDay($yesterday, $today) {
-        $ly = substr($yesterday, 0, 4);
-        $lm = substr($yesterday, 4, 2);
-        $ld = substr($yesterday, 6, 2);
-        $y = substr($today, 0, 4);
-        $m = substr($today, 4, 2);
-        $d = substr($today, 6, 2);
-        if ($lm == $m) {
-            return (intval($d) - intval($ld)) == 1 ? true : false;
-        } else {
-            if (((intval($m) - intval($lm)) == 1) || ($lm == 12 && ($y - $ly) == 1 && $m == 1)) {
-                if ($this->getMonthDay(intval($lm), intval($ly)) == intval($ld) && intval($d) == 1) return true;
-                else return false;
-            } else return false;
-        }
+    private function initData() {
+        DP::query("INSERT INTO sign_data (user_id, point, sign_day_long, last_sign, sign_count) VALUES (?,?,?,?,?)", [$this->getUserId(), 0, 1, 0, 0]);
+        return [
+            "user_id" => $this->getUserId(),
+            "point" => 0,
+            "sign_day_long" => 1,
+            "last_sign" => 0,
+            "sign_count" => 0
+        ];
     }
 
-    private function getMonthDay($m, $y) {
-        switch ($m) {
-            case 1:
-            case 3:
-            case 5:
-            case 7:
-            case 8:
-            case 10:
-            case 12:
-                return 31;
-            case 4:
-            case 6:
-            case 9:
-            case 11:
-                return 30;
-            default:
-                if ($y % 4 == 0) return 29;
-                return 28;
-        }
-    }
+    private function doSign() {
+        $sign_data = DP::query("SELECT * FROM sign_data WHERE user_id = ?", [$this->getUserId()]);
+        if ($sign_data == []) $sign_data = $this->initData();
+        else $sign_data = $sign_data[0];
+        $today_zero = TimeManager::getTodayZero();
+        if ($sign_data["last_sign"] >= $today_zero) return false;//签过了
 
-    public function doSign($time) {
-        if ($this->isLastDay($time[0], date("Ymd"))) {
-            $this->getUser()->setSignDay($this->getUser()->getSignDay() + 1);
+        $last_day_zero = $today_zero - 86400;
+        if ($sign_data["last_sign"] >= $last_day_zero) {//是不是连签
+            $sign_data["sign_day_long"]++;
         } else {
-            $this->getUser()->setSignDay(1);
+            $sign_data["sign_day_long"] = 1;
         }
-        $time[0] = date("Ymd");
-        $time[1] = date("His");
-        $time[2] = microtime(true);
-        $this->getUser()->setSignTime($time);
-        $is_first = true;
-        /**
-         * @var string $k
-         * @var User $v
-         */
-        foreach (ZMUtil::getAllUsers(true) as $k => $v) {
-            $t = $v->getSignTime();
-            if ($time[0] == $t[0]) {
-                if ($time[1] > $t[1]) {
-                    $is_first = false;
-                    break;
-                } elseif ($time[1] == $t[1]) {
-                    if ($time[2] > $t[2]) {
-                        $is_first = false;
-                        break;
-                    }
-                }
-            }
-        }
+        $sign_data["sign_count"]++;
+        $sign_data["last_sign"] = microtime(true);
+
         $msg = "「签到成功」";
-        $this->getUser()->addSignCount(1);
         $attribute = ZMBuf::get("sign_attribute");
         $add_count = mt_rand($attribute["point"][0], $attribute["point"][1]);
-        $this->getUser()->addPoint($add_count);
-        $msg .= "\n获得积分：+" . $add_count;
-        if ($is_first) {
+        if (!ZMBuf::array_key_exists("sign_first", date("Ymd"))) {
             $counts = mt_rand($attribute["first"][0], $attribute["first"][1]);
-            $this->getUser()->addPoint($counts);
+            $add_count += $counts;
             $msg .= "\n今日首签加成：+" . $counts . "，棒棒哒～";
+            $is_first = true;
+            ZMBuf::appendKey("sign_first", date("Ymd"), $this->getUserId());
         }
-        if ($this->getUser()->getSignDay() >= 7) {
-            $this->getUser()->addPoint(1);
+        if ($sign_data["sign_day_long"] >= 3) {
+            $add_count++;
             $msg .= "\n连续签到加成：+1";
-            $msg .= "\n连续签到：" . $this->getUser()->getSignDay() . "天";
+            $msg .= "\n连续签到：" . $sign_data["sign_day_long"] . "天";
         }
-        CQAPI::send_like($this->getConnection(), $this->getUserId());
-        $msg .= "\n累计签到：" . $this->getUser()->getSignCount() . "次";
-        $msg .= "\n当前积分：" . $this->getUser()->getPoint();
-        $msg .= "\n炸毛给你一个赞～！";
-        //$msg .= "\n「祝大家七夕节快乐哦～」";
-        $this->reply($msg);
+        $msg .= "\n本次签到共获得：+" . $add_count;
+        $sign_data["point"] += $add_count;
+        DP::query("UPDATE sign_data SET point = ?, sign_day_long = ?, last_sign = ?, sign_count = ? WHERE user_id = ?", [
+            $sign_data["point"],
+            $sign_data["sign_day_long"],
+            $sign_data["last_sign"],
+            $sign_data["sign_count"],
+            $this->getUserId()
+        ]);
+        DP::query("INSERT INTO sign_record (user_id, sign_time, add_point, is_first) VALUES (?,?,?,?)", [
+            $this->getUserId(),
+            $sign_data["last_sign"],
+            $add_count,
+            (isset($is_first) ? 1 : 0)
+        ]);
+        $msg .= "\n累计签到：" . $sign_data["sign_count"] . "次";
+        $msg .= "\n当前积分：" . $sign_data["point"];
+        if($sign_data["point"] >= 150) {
+            CQAPI::send_like($this->getConnection(), $this->getUserId());
+            $msg .= "\n炸毛给你一个赞～！";
+        }
+        return $this->reply($msg);
     }
 }
