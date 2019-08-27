@@ -1,66 +1,87 @@
 <?php
 
+namespace crazybot\mods;
+
+use crazybot\api\CQ;
+use crazybot\api\CQAPI;
+use crazybot\CrazyBot;
+use crazybot\utils\{ZMRequest, ZMUtil};
+use framework\Console;
+use framework\ZMBuf;
+use Swoole\Coroutine\Http\Client;
+
 /**
  * Class TuringDetect
- * 图灵机器人模块，无指令，非基于基类
+ * 图灵机器人模块
  */
 class TuringDetect extends ModBase
 {
-    const mod_level = 2;
+    const mod_level = 20;
 
-    public function __construct(CrazyBot $main, $data) {
-        parent::__construct($main, $data);
-        $this->function_call = true;
-        if ($this->main->isFunctionCalled()) return;
-        $msg = $data["message"];
-        if ($data["message_type"] == "private" || $data["message_type"] == "wechat") {
+    public function __construct(CrazyBot $main, $data) { parent::__construct($main, $data); }
+
+    public function onMessage($msg) {
+        $data = $this->data;
+        if ($this->main->isFunctionCalled()) return false;
+        if(mb_substr($msg,0, 7) == "炸毛是什么垃圾") return false;
+        if ($this->getMessageType() == "private" || $this->getMessageType() == "wechat") {
             if (substr($msg, 0, 1) == "*") $msg = substr($msg, 1);
             elseif (($a = mb_substr($msg, 0, 3)) == "炸毛，" || $a == "卷毛，") $msg = mb_substr($msg, 3);
             elseif (($a = mb_substr($msg, 0, 2)) == "炸毛" || $a == "卷毛") $msg = mb_substr($msg, 2);
             elseif (($a = mb_substr($msg, -3)) == "，炸毛" || $a == "，卷毛") $msg = mb_substr($msg, 0, -3);
-            else return;
-            $this->function_call = "block";
+            else return false;
             Console::info("正在执行图灵消息：" . $msg);
             $data["message"] = $msg;
             $s = new CrazyBot($data, $this->getConnection(), $this->main->circle + 1);
-            if ($s->execute() === true) return;
-            if ($data["message"] == "") return;
+            if ($s->callMessage() === true) {
+                $this->main->setFunctionCalled();
+                $this->function_call = "block";
+                return false;
+            }
+            if ($data["message"] == "") return false;
             $msg = self::getAPIMsg($msg, $this->getUserId());
             $this->reply($msg);
-        } elseif ($data["message_type"] == "group") {
-            if (strstr($data["message"], "[CQ:at,qq=" . $this->getRobotId() . "]") !== false) {
-                $data["message"] = trim(str_replace("[CQ:at,qq=" . $this->getRobotId() . "]", "", $data["message"]));
+            $this->function_call = "block";
+        } elseif ($this->getMessageType() == "group") {
+            if (strstr($msg, "[CQ:at,qq=" . $this->getRobotId() . "]") !== false) {
+                $data["message"] = trim(str_replace("[CQ:at,qq=" . $this->getRobotId() . "]", "", $msg));
                 $s = new CrazyBot($data, $this->getConnection(), $this->main->circle + 1);
-                if ($s->execute() === true) return;
-                if ($data["message"] == "") return;
+                if ($s->callMessage() === true) {
+                    $this->main->setFunctionCalled();
+                    $this->function_call = "block";
+                    return false;
+                }
+                if ($data["message"] == "") return false;
                 $msg = $this->getAPIMsg($data["message"], $data["user_id"]);
-                $main->reply(CQ::at($this->getUserId()) . $msg);
-                return;
+                $this->reply(CQ::at($this->getUserId()) . $msg);
+                return false;
             } elseif (substr($msg, 0, 1) == "*") $msg = substr($msg, 1);
             elseif (($a = mb_substr($msg, 0, 3)) == "炸毛，" || $a == "卷毛，") $msg = mb_substr($msg, 3);
             elseif (($a = mb_substr($msg, 0, 2)) == "炸毛" || $a == "卷毛") $msg = mb_substr($msg, 2);
             elseif (($a = mb_substr($msg, -3)) == "，炸毛" || $a == "，卷毛") $msg = mb_substr($msg, 0, -3);
             elseif (mb_substr($msg, 0, 3) == "为什么" && mt_rand(0, 100) > 30) $msg = trim($msg);
-            else return;
+            else return false;
             $data["message"] = $msg;
             $s = new CrazyBot($data, $this->getConnection(), $this->main->circle + 1);
-            if ($s->execute() === true) {
+            if ($s->callMessage() === true) {
                 $this->main->setFunctionCalled();
-                return;
+                $this->function_call = "block";
+                return false;
             }
-            if ($data["message"] == "") return;
+            if ($data["message"] == "") return false;
             $msg = self::getAPIMsg($msg, $this->getUserId());
             $this->reply($msg);
         }
+        return true;
     }
 
-    public static function initValues() {
-        $func = ZMUtil::getUser(date("Y"))->getFunction("turing_robot");
+    public function onStart() {
+        //$func = ZMUtil::getUser(date("Y"))->getFunction("turing_robot");
+        $func = false;
         ZMBuf::set("turing_robot", ($func === false ? 0 : $func));
-        ZMBuf::set("turing_api_keys", DataProvider::getJsonData("TuringDetect_api.json"));
     }
 
-    public static function saveValues() {
+    public function onSave() {
         ZMUtil::getUser(date("Y"))->setFunction("turing_robot", ZMBuf::get("turing_robot"));
     }
 
@@ -75,12 +96,13 @@ class TuringDetect extends ModBase
         $origin = $msg;
         $i = ZMBuf::get("turing_robot");
         //5个API都用光了
-        if ($i >= count(ZMBuf::get("turing_api_keys"))) {
+        if ($i >= count(ZMBuf::globals("turing_api"))) {
+            Console::info("正在请求腾讯AI: ".$msg);
             $msg = self::getTencentMsg($userId, $msg);
             return $msg;
         }
         //请求第i个API
-        $r = self::requestTuring($msg, $userId, ZMBuf::get("turing_api_keys")[$i]);
+        $r = self::requestTuring($msg, $userId, ZMBuf::globals("turing_api")[$i]);
         if (!isset($r["intent"]["code"])) return "XD 哎呀，炸毛脑子突然短路了，请稍后再问我吧！";
         $status = self::getResultStatus($r);
         if ($status !== true) {
@@ -109,6 +131,48 @@ class TuringDetect extends ModBase
                     break;
             }
         }
+        go(function() use ($msg, $final, $userId, $i){
+            Console::info("正在保存图灵消息 $i [".$msg."]");
+            $conn = ZMBuf::$sql_pool->get();
+            $ps = $conn->prepare("INSERT INTO turing_record VALUES(?,?,?,?,?)");
+            if ($ps === false) {
+                Console::error("SQL语句查询错误！");
+                Console::error("错误信息：" . $conn->error);
+                ZMBuf::$sql_pool->put($conn);
+                return;
+            }
+            $ps->execute([
+                0,
+                time(),
+                $msg,
+                trim($final),
+                strval($userId)
+            ]);
+            if($ps->errno != 0) {
+                Console::error("execute错误！".$ps->error);
+            }
+            $msg_tencent = trim(self::getTencentMsg($userId, $msg));
+            if($msg_tencent != "") {
+                $ps = $conn->prepare("INSERT INTO tencent_ai_record VALUES (?,?,?,?,?)");
+                if ($ps === false) {
+                    Console::error("SQL语句查询错误！");
+                    Console::error("错误信息：" . $conn->error);
+                    ZMBuf::$sql_pool->put($conn);
+                    return;
+                }
+                $ps->execute([
+                    0,
+                    time(),
+                    $msg,
+                    trim($msg_tencent),
+                    strval($userId)
+                ]);
+                if($ps->errno != 0) {
+                    Console::error("execute错误！".$ps->error);
+                }
+            }
+            ZMBuf::$sql_pool->put($conn);
+        });
         return trim($final);
     }
 
@@ -138,7 +202,7 @@ class TuringDetect extends ModBase
             $content["reqType"] = 1;
         }
         if (!isset($content["perception"])) return "请说出你想说的话";
-        $client = new \Swoole\Coroutine\Http\Client("openapi.tuling123.com", 80);
+        $client = new Client("openapi.tuling123.com", 80);
         $client->setHeaders(["Content-type" => "application/json"]);
         $client->post("/openapi/api/v2", json_encode($content, JSON_UNESCAPED_UNICODE));
         $r = json_decode($client->body, true);
